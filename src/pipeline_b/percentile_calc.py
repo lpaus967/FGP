@@ -33,7 +33,7 @@ STATUS_LABELS = {
 def interpolate_percentile(
     current_flow: float,
     percentile_thresholds: pd.Series
-) -> float:
+) -> Optional[float]:
     """
     Interpolate the exact percentile for a given flow value.
 
@@ -41,22 +41,38 @@ def interpolate_percentile(
 
     Args:
         current_flow: Current discharge value
-        percentile_thresholds: Series with percentile values as index and flow thresholds as values
+        percentile_thresholds: Series with percentile columns (p05, p10, p25, p50, p75, p90, p95)
 
     Returns:
-        Interpolated percentile (0-100).
+        Interpolated percentile (0-100), or None if insufficient data.
     """
+    # Map config percentiles to column names (5 -> 'p05', 10 -> 'p10', etc.)
+    percentile_cols = [f"p{p:02d}" for p in config.usgs.percentiles]
     percentiles = np.array(config.usgs.percentiles)
-    thresholds = percentile_thresholds[percentiles].values
+
+    # Get threshold values, skipping NaN
+    thresholds = []
+    valid_percentiles = []
+    for col, pct in zip(percentile_cols, percentiles):
+        if col in percentile_thresholds and pd.notna(percentile_thresholds[col]):
+            thresholds.append(percentile_thresholds[col])
+            valid_percentiles.append(pct)
+
+    if len(thresholds) < 2:
+        # Not enough data points for interpolation
+        return None
+
+    thresholds = np.array(thresholds)
+    valid_percentiles = np.array(valid_percentiles)
 
     # Handle edge cases
     if current_flow <= thresholds[0]:
-        return 0.0
+        return float(valid_percentiles[0])
     if current_flow >= thresholds[-1]:
-        return 100.0
+        return float(valid_percentiles[-1])
 
     # Linear interpolation
-    return float(np.interp(current_flow, thresholds, percentiles))
+    return float(np.interp(current_flow, thresholds, valid_percentiles))
 
 
 def get_status_label(percentile: float) -> str:
@@ -78,42 +94,50 @@ def get_status_label(percentile: float) -> str:
 def calculate_live_percentiles(
     current_df: pd.DataFrame,
     reference_df: pd.DataFrame,
-    day_of_year: Optional[int] = None
+    month_day: Optional[str] = None
 ) -> pd.DataFrame:
     """
     Calculate percentiles for current conditions.
 
     Args:
-        current_df: DataFrame with current flow values
-        reference_df: DataFrame with reference statistics
-        day_of_year: Day of year for comparison (default: today)
+        current_df: DataFrame with current flow values (must have 'site_no' and 'discharge' columns)
+        reference_df: DataFrame with reference statistics (must have 'site_id' and 'month_day' columns)
+        month_day: Month-day string for comparison (e.g., '01-15'). Default: today.
 
     Returns:
         DataFrame with site_id, flow, percentile, and status_label.
     """
-    if day_of_year is None:
-        day_of_year = datetime.now().timetuple().tm_yday
+    if month_day is None:
+        month_day = datetime.now().strftime("%m-%d")
+
+    logger.info(f"Calculating percentiles for {month_day}")
 
     results = []
 
     for _, row in current_df.iterrows():
         site_id = row.get("site_no")
-        current_flow = row.iloc[0] if pd.api.types.is_numeric_dtype(row.iloc[0]) else None
+        current_flow = row.get("discharge")
 
-        if site_id is None or current_flow is None:
+        if site_id is None or current_flow is None or pd.isna(current_flow):
             continue
 
-        # Get reference data for this site and DOY
+        # Get reference data for this site and month_day
         site_ref = reference_df[
             (reference_df["site_id"] == site_id) &
-            (reference_df.index == day_of_year)
+            (reference_df["month_day"] == month_day)
         ]
 
         if site_ref.empty:
+            logger.debug(f"No reference data for site {site_id} on {month_day}")
             continue
 
         # Calculate percentile
         percentile = interpolate_percentile(current_flow, site_ref.iloc[0])
+
+        if percentile is None:
+            logger.debug(f"Could not calculate percentile for site {site_id} (insufficient reference data)")
+            continue
+
         status = get_status_label(percentile)
 
         results.append({
@@ -124,6 +148,7 @@ def calculate_live_percentiles(
             "timestamp": datetime.utcnow().isoformat()
         })
 
+    logger.info(f"Calculated percentiles for {len(results)} sites")
     return pd.DataFrame(results)
 
 

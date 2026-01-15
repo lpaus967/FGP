@@ -67,3 +67,47 @@ This file gives Claude the step-by-step checklist to write the code.
     - `0 0 1 * * /usr/bin/python3 /home/ubuntu/project/main.py --mode=slow` (Monthly)
   - _Deliverable:_ Verified execution via `syslog`.
 ```
+
+PIPELINE A TESTS
+
+# Step 1: Test fetching history for a single site
+
+python scripts/test_pipeline_a.py --step 1
+
+# Step 2: Test percentile calculation with hyswap
+
+python scripts/test_pipeline_a.py --step 2
+
+# Step 3: Test listing sites for a state (Vermont)
+
+python scripts/test_pipeline_a.py --step 3
+
+# Step 4: Test full single-site pipeline
+
+python scripts/test_pipeline_a.py --step 4
+
+# Step 5: Test S3 upload (requires AWS credentials)
+
+python scripts/test_pipeline_a.py --step 5
+
+PIPELINE B TESTS
+
+# Step 1: Test loading your local VT_stats.parquet
+
+python scripts/test_pipeline_b.py --step 1
+
+# Step 2: Test fetching live IV data from USGS
+
+python scripts/test_pipeline_b.py --step 2
+
+# Step 3: Test percentile calculation (compares live to reference)
+
+python scripts/test_pipeline_b.py --step 3
+
+# Step 4: Full pipeline test
+
+python scripts/test_pipeline_b.py --step 4
+
+# Or run all
+
+python scripts/test_pipeline_b.py --step all

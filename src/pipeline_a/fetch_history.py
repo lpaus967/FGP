@@ -21,7 +21,7 @@ def fetch_site_history(site_id: str, start_date: Optional[str] = None) -> Option
 
     Args:
         site_id: USGS site identifier (e.g., "01013500")
-        start_date: Start date for data retrieval (default: 1950-01-01)
+        start_date: Start date for data retrieval (default: 2000-01-01)
 
     Returns:
         DataFrame with daily mean discharge values, or None if no data available.
@@ -39,6 +39,17 @@ def fetch_site_history(site_id: str, start_date: Optional[str] = None) -> Option
         if df.empty:
             logger.warning(f"No data available for site {site_id}")
             return None
+
+        # Find the discharge column (usually '00060_Mean')
+        discharge_col = [c for c in df.columns if "00060" in c and "cd" not in c.lower()]
+        if discharge_col:
+            col = discharge_col[0]
+            # Filter out invalid/placeholder values (-999999 is USGS missing data code)
+            df = df[df[col] > 0]
+
+            if df.empty:
+                logger.warning(f"No valid discharge data for site {site_id} after filtering")
+                return None
 
         return df
 

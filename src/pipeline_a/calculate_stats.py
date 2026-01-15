@@ -29,15 +29,28 @@ def calculate_site_percentiles(df: pd.DataFrame, site_id: str) -> Optional[pd.Da
         or None if calculation fails.
     """
     try:
+        # Find the discharge column (00060_Mean, not site_no or quality codes)
+        discharge_cols = [c for c in df.columns if "00060" in c and "cd" not in c.lower()]
+        if not discharge_cols:
+            logger.error(f"No discharge column found for site {site_id}")
+            return None
+
+        discharge_col = discharge_cols[0]
+        logger.debug(f"Using discharge column: {discharge_col}")
+
         # Use hyswap to calculate streamflow percentiles by day of year
         percentile_df = hyswap.percentiles.calculate_variable_percentile_thresholds_by_day(
             df,
-            data_column_name=df.columns[0],  # First data column
+            data_column_name=discharge_col,
             percentiles=list(config.usgs.percentiles)
         )
 
         # Add site identifier
         percentile_df["site_id"] = site_id
+
+        # Convert month_day index to column for easier storage/lookup
+        percentile_df = percentile_df.reset_index()
+        percentile_df.rename(columns={"index": "month_day"}, inplace=True)
 
         return percentile_df
 

@@ -95,4 +95,20 @@ def extract_latest_values(iv_df: pd.DataFrame) -> pd.DataFrame:
     """
     # Group by site and get the most recent reading
     latest = iv_df.groupby("site_no").last().reset_index()
+
+    # Find the primary discharge column (00060, not quality codes)
+    discharge_cols = [c for c in latest.columns if c == "00060" or (c.startswith("00060") and "cd" not in c.lower())]
+
+    if discharge_cols:
+        # Use primary 00060 column
+        primary_col = "00060" if "00060" in discharge_cols else discharge_cols[0]
+
+        # Create standardized discharge column
+        latest["discharge"] = latest[primary_col]
+
+        # Filter out invalid values (-999999 is USGS missing/ice code)
+        latest = latest[latest["discharge"] > 0].copy()
+
+        logger.info(f"Extracted {len(latest)} valid readings from IV data")
+
     return latest

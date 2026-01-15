@@ -1,12 +1,12 @@
 """
 TICKET-3.1: Reference Loader
 
-Loads pre-calculated reference statistics from S3.
+Loads pre-calculated reference statistics from S3 or local files.
 """
 
 import logging
-from functools import lru_cache
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -17,10 +17,20 @@ logger = logging.getLogger(__name__)
 # Module-level cache for reference data
 _reference_cache: dict[str, pd.DataFrame] = {}
 
+# Local directory for reference files (set via set_local_reference_dir)
+_local_reference_dir: Optional[Path] = None
+
+
+def set_local_reference_dir(path: Union[str, Path]) -> None:
+    """Set the local directory for reference files (for testing without S3)."""
+    global _local_reference_dir
+    _local_reference_dir = Path(path)
+    logger.info(f"Using local reference directory: {_local_reference_dir}")
+
 
 def load_reference_data(state_code: str, use_cache: bool = True) -> Optional[pd.DataFrame]:
     """
-    Load reference statistics for a state from S3.
+    Load reference statistics for a state from local files or S3.
 
     Args:
         state_code: Two-letter state code (e.g., "VT")
@@ -36,9 +46,19 @@ def load_reference_data(state_code: str, use_cache: bool = True) -> Optional[pd.
         logger.debug(f"Using cached reference data for {state_code}")
         return _reference_cache[state_code]
 
-    # Download from S3
-    s3_client = S3Client()
-    df = s3_client.download_reference_stats(state_code)
+    df = None
+
+    # Try local file first if directory is set
+    if _local_reference_dir is not None:
+        local_path = _local_reference_dir / f"{state_code}_stats.parquet"
+        if local_path.exists():
+            logger.info(f"Loading reference data from local file: {local_path}")
+            df = pd.read_parquet(local_path)
+
+    # Fall back to S3
+    if df is None:
+        s3_client = S3Client()
+        df = s3_client.download_reference_stats(state_code)
 
     if df is not None and use_cache:
         _reference_cache[state_code] = df
