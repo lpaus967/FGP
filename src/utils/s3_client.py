@@ -95,6 +95,24 @@ class S3Client:
         """
         Upload live monitoring output to S3.
 
+        Outputs JSON in a format optimized for frontend joins:
+        {
+            "generated_at": "2026-01-15T14:00:00Z",
+            "site_count": 10000,
+            "sites": {
+                "01100000": {
+                    "flow": 5920.0,
+                    "gage_height": 8.5,
+                    "percentile": 52.3,
+                    "flow_status": "Normal",
+                    "drought_status": null,
+                    "flood_status": null,
+                    "state": "MA"
+                },
+                ...
+            }
+        }
+
         Args:
             df: DataFrame with current conditions
 
@@ -110,14 +128,40 @@ class S3Client:
         history_key = f"{config.s3.live_output_prefix}/history/{timestamp.strftime('%Y-%m-%dT%H%M')}.json"
 
         try:
-            json_data = df.to_json(orient="records", date_format="iso")
+            # Build optimized JSON structure keyed by site_id for fast frontend lookups
+            sites_dict = {}
+            for _, row in df.iterrows():
+                site_id = str(row.get("site_id", ""))
+                if site_id:
+                    site_data = {
+                        "flow": row.get("flow") if pd.notna(row.get("flow")) else None,
+                        "gage_height": row.get("gage_height") if pd.notna(row.get("gage_height")) else None,
+                        "percentile": row.get("percentile") if pd.notna(row.get("percentile")) else None,
+                        "flow_status": row.get("flow_status") if pd.notna(row.get("flow_status")) else None,
+                        "drought_status": row.get("drought_status") if pd.notna(row.get("drought_status")) else None,
+                        "flood_status": row.get("flood_status") if pd.notna(row.get("flood_status")) else None,
+                    }
+                    # Include state if present
+                    if "state" in row and pd.notna(row.get("state")):
+                        site_data["state"] = row.get("state")
 
-            # Upload current snapshot
+                    sites_dict[site_id] = site_data
+
+            output = {
+                "generated_at": timestamp.isoformat() + "Z",
+                "site_count": len(sites_dict),
+                "sites": sites_dict
+            }
+
+            json_data = json.dumps(output, separators=(",", ":"))  # Compact JSON
+
+            # Upload current snapshot with CORS-friendly headers
             self.s3.put_object(
                 Bucket=self.bucket,
                 Key=current_key,
                 Body=json_data,
-                ContentType="application/json"
+                ContentType="application/json",
+                CacheControl="max-age=300",  # 5 minute cache
             )
 
             # Upload to history
@@ -128,7 +172,7 @@ class S3Client:
                 ContentType="application/json"
             )
 
-            logger.info(f"Uploaded live output to s3://{self.bucket}/{current_key}")
+            logger.info(f"Uploaded live output ({len(sites_dict)} sites) to s3://{self.bucket}/{current_key}")
             return True
 
         except ClientError as e:
@@ -179,3 +223,57 @@ class S3Client:
         except ClientError as e:
             logger.error(f"Failed to list available states: {e}")
             return []
+
+    def upload_flood_thresholds(self, df: pd.DataFrame) -> bool:
+        """
+        Upload flood thresholds reference data to S3.
+
+        Args:
+            df: DataFrame with flood thresholds
+
+        Returns:
+            True if upload successful, False otherwise.
+        """
+        key = f"{config.s3.flood_thresholds_prefix}/flood_thresholds.parquet"
+
+        try:
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False)
+            buffer.seek(0)
+
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=buffer.getvalue()
+            )
+
+            logger.info(f"Uploaded flood thresholds ({len(df)} sites) to s3://{self.bucket}/{key}")
+            return True
+
+        except ClientError as e:
+            logger.error(f"Failed to upload flood thresholds: {e}")
+            return False
+
+    def download_flood_thresholds(self) -> Optional[pd.DataFrame]:
+        """
+        Download flood thresholds reference data from S3.
+
+        Returns:
+            DataFrame with flood thresholds, or None if not found.
+        """
+        key = f"{config.s3.flood_thresholds_prefix}/flood_thresholds.parquet"
+
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
+            buffer = io.BytesIO(response["Body"].read())
+            df = pd.read_parquet(buffer)
+
+            logger.info(f"Downloaded flood thresholds ({len(df)} sites) from s3://{self.bucket}/{key}")
+            return df
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning("Flood thresholds not found in S3")
+            else:
+                logger.error(f"Failed to download flood thresholds: {e}")
+            return None

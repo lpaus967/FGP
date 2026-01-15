@@ -2,6 +2,7 @@
 TICKET-3.2: Live Data Fetcher
 
 Fetches current instantaneous values from USGS.
+Includes both discharge (00060) and gage height (00065) for flood stage determination.
 """
 
 import logging
@@ -14,19 +15,30 @@ from src.utils.config import config
 
 logger = logging.getLogger(__name__)
 
+# Parameter codes
+PARAM_DISCHARGE = "00060"  # Discharge (cubic feet per second)
+PARAM_GAGE_HEIGHT = "00065"  # Gage height (feet)
 
-def fetch_current_conditions(site_ids: list[str]) -> Optional[pd.DataFrame]:
+
+def fetch_current_conditions(site_ids: list[str], include_gage_height: bool = True) -> Optional[pd.DataFrame]:
     """
     Fetch current instantaneous values for multiple sites.
 
     Args:
         site_ids: List of USGS site identifiers
+        include_gage_height: Whether to also fetch gage height for flood determination
 
     Returns:
-        DataFrame with current discharge values, or None if fetch fails.
+        DataFrame with current discharge and gage height values, or None if fetch fails.
     """
     if not site_ids:
         return None
+
+    # Build parameter list
+    params = [PARAM_DISCHARGE]
+    if include_gage_height:
+        params.append(PARAM_GAGE_HEIGHT)
+    param_str = ",".join(params)
 
     try:
         # Fetch in batches to avoid API limits
@@ -38,7 +50,7 @@ def fetch_current_conditions(site_ids: list[str]) -> Optional[pd.DataFrame]:
 
             df, _ = nwis.get_iv(
                 sites=batch,
-                parameterCd=config.usgs.parameter_code
+                parameterCd=param_str
             )
 
             if not df.empty:
@@ -56,20 +68,27 @@ def fetch_current_conditions(site_ids: list[str]) -> Optional[pd.DataFrame]:
         return None
 
 
-def fetch_state_current_conditions(state_code: str) -> Optional[pd.DataFrame]:
+def fetch_state_current_conditions(state_code: str, include_gage_height: bool = True) -> Optional[pd.DataFrame]:
     """
     Fetch current instantaneous values for all sites in a state.
 
     Args:
         state_code: Two-letter state code (e.g., "VT")
+        include_gage_height: Whether to also fetch gage height for flood determination
 
     Returns:
-        DataFrame with current discharge values.
+        DataFrame with current discharge and gage height values.
     """
+    # Build parameter list
+    params = [PARAM_DISCHARGE]
+    if include_gage_height:
+        params.append(PARAM_GAGE_HEIGHT)
+    param_str = ",".join(params)
+
     try:
         df, _ = nwis.get_iv(
             stateCd=state_code,
-            parameterCd=config.usgs.parameter_code
+            parameterCd=param_str
         )
 
         if df.empty:
@@ -91,7 +110,7 @@ def extract_latest_values(iv_df: pd.DataFrame) -> pd.DataFrame:
         iv_df: DataFrame with instantaneous values
 
     Returns:
-        DataFrame with one row per site containing the latest value.
+        DataFrame with one row per site containing the latest discharge and gage height.
     """
     # Group by site and get the most recent reading
     latest = iv_df.groupby("site_no").last().reset_index()
@@ -102,13 +121,28 @@ def extract_latest_values(iv_df: pd.DataFrame) -> pd.DataFrame:
     if discharge_cols:
         # Use primary 00060 column
         primary_col = "00060" if "00060" in discharge_cols else discharge_cols[0]
-
-        # Create standardized discharge column
         latest["discharge"] = latest[primary_col]
+    else:
+        latest["discharge"] = None
 
-        # Filter out invalid values (-999999 is USGS missing/ice code)
-        latest = latest[latest["discharge"] > 0].copy()
+    # Find the gage height column (00065, not quality codes)
+    gage_cols = [c for c in latest.columns if c == "00065" or (c.startswith("00065") and "cd" not in c.lower())]
 
-        logger.info(f"Extracted {len(latest)} valid readings from IV data")
+    if gage_cols:
+        primary_gage_col = "00065" if "00065" in gage_cols else gage_cols[0]
+        latest["gage_height"] = latest[primary_gage_col]
+    else:
+        latest["gage_height"] = None
+
+    # Filter out invalid discharge values (-999999 is USGS missing/ice code)
+    # Keep rows where discharge is valid OR gage_height is valid (for flood monitoring)
+    valid_discharge = (latest["discharge"].notna()) & (latest["discharge"] > 0)
+    valid_gage = (latest["gage_height"].notna()) & (latest["gage_height"] > -100)  # Some gages can be negative
+    latest = latest[valid_discharge | valid_gage].copy()
+
+    # Replace invalid discharge with None
+    latest.loc[latest["discharge"] <= 0, "discharge"] = None
+
+    logger.info(f"Extracted {len(latest)} valid readings from IV data")
 
     return latest

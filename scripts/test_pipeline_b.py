@@ -169,6 +169,8 @@ def test_step_4_full_monitor():
     print("STEP 4: Testing Full Live Monitor Pipeline")
     print("="*60)
 
+    import json
+    from datetime import datetime
     from src.pipeline_b.reference_loader import set_local_reference_dir
     from src.pipeline_b.percentile_calc import run_live_monitor
 
@@ -177,8 +179,6 @@ def test_step_4_full_monitor():
 
     print("\nRunning full live monitor for VT (no S3 upload)...")
 
-    # We need to modify run_live_monitor to skip S3 upload for testing
-    # For now, let's just run steps 1-3 in sequence
     from src.pipeline_b.reference_loader import load_reference_data
     from src.pipeline_b.live_fetcher import fetch_state_current_conditions, extract_latest_values
     from src.pipeline_b.percentile_calc import calculate_live_percentiles
@@ -204,15 +204,44 @@ def test_step_4_full_monitor():
         print("FAILED: No results generated")
         return False
 
+    # Add state column for VT
+    results["state"] = "VT"
+
     print(f"\nSUCCESS! Full pipeline completed")
     print(f"Processed {len(results)} sites")
 
-    # Save locally for inspection
-    output_path = LOCAL_REF_DIR / "live_results_test.json"
-    results.to_json(output_path, orient="records", indent=2)
-    print(f"\nSaved results to: {output_path}")
+    # Build optimized JSON structure (keyed by site_id for frontend joins)
+    sites_dict = {}
+    for _, row in results.iterrows():
+        site_id = str(row.get("site_id", ""))
+        if site_id:
+            sites_dict[site_id] = {
+                "flow": row.get("flow"),
+                "percentile": row.get("percentile"),
+                "status": row.get("status_label"),
+                "state": row.get("state", "VT")
+            }
 
-    print(f"\nSample output:")
+    output = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "site_count": len(sites_dict),
+        "sites": sites_dict
+    }
+
+    # Save locally for inspection
+    output_path = LOCAL_REF_DIR / "current_status.json"
+    with open(output_path, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\nSaved optimized JSON to: {output_path}")
+
+    print(f"\nJSON structure preview:")
+    print(f"  generated_at: {output['generated_at']}")
+    print(f"  site_count: {output['site_count']}")
+    print(f"  sites (first 3):")
+    for i, (site_id, data) in enumerate(list(sites_dict.items())[:3]):
+        print(f"    {site_id}: {data}")
+
+    print(f"\nDataFrame sample:")
     print(results.head(10))
 
     return results

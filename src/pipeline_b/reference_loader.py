@@ -119,6 +119,55 @@ def get_site_reference(
 
 def clear_cache() -> None:
     """Clear the in-memory reference data cache."""
-    global _reference_cache
+    global _reference_cache, _flood_thresholds_cache
     _reference_cache.clear()
+    _flood_thresholds_cache = None
     logger.info("Reference data cache cleared")
+
+
+# Module-level cache for flood thresholds
+_flood_thresholds_cache: Optional[pd.DataFrame] = None
+
+
+def load_flood_thresholds(use_cache: bool = True) -> Optional[pd.DataFrame]:
+    """
+    Load NWS flood thresholds from local files or S3.
+
+    Flood thresholds are OPTIONAL - the system works without them.
+    If not available, flood_status will simply not be calculated.
+
+    Args:
+        use_cache: Whether to use in-memory cache
+
+    Returns:
+        DataFrame with flood thresholds, or None if not available.
+    """
+    global _flood_thresholds_cache
+
+    # Check cache first
+    if use_cache and _flood_thresholds_cache is not None:
+        logger.debug("Using cached flood thresholds")
+        return _flood_thresholds_cache
+
+    df = None
+
+    # Try local file first if directory is set
+    if _local_reference_dir is not None:
+        local_path = _local_reference_dir / "flood_thresholds.parquet"
+        if local_path.exists():
+            logger.info(f"Loading flood thresholds from local file: {local_path}")
+            df = pd.read_parquet(local_path)
+
+    # Fall back to S3 (silently - flood thresholds are optional)
+    if df is None:
+        try:
+            s3_client = S3Client()
+            df = s3_client.download_flood_thresholds()
+        except Exception:
+            pass  # Silently ignore - flood thresholds are optional
+
+    if df is not None and use_cache:
+        _flood_thresholds_cache = df
+        logger.info(f"Cached flood thresholds for {len(df)} sites")
+
+    return df
