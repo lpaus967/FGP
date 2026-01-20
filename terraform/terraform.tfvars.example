@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and customize
+
+aws_region     = "us-east-1"
+environment    = "dev"
+project_prefix = "fgp"              # Unique prefix - all resources will be named fgp-*
+bucket_name    = "flow-percentile-data"  # Final bucket: fgp-flow-percentile-data-dev
