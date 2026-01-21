@@ -40,11 +40,21 @@ class DroughtConfig:
 
 
 @dataclass
+class TrendConfig:
+    """Trend detection configuration for rising/falling limb analysis."""
+    window_hours: int = 48          # Look back period
+    min_data_points: int = 4        # Minimum readings required
+    rising_threshold: float = 5.0   # % total change to classify as rising
+    falling_threshold: float = -5.0 # % total change to classify as falling
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     s3: S3Config
     usgs: USGSConfig
     drought: DroughtConfig
+    trend: TrendConfig
     max_workers: int = 10  # For concurrent.futures parallelization
 
     @classmethod
@@ -54,6 +64,7 @@ class Config:
             s3=S3Config(),
             usgs=USGSConfig(),
             drought=DroughtConfig(),
+            trend=TrendConfig(),
             max_workers=int(os.getenv("MAX_WORKERS", "10"))
         )
 
