@@ -7,7 +7,7 @@ Handles all S3 operations for uploading and downloading data.
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import boto3
@@ -140,6 +140,9 @@ class S3Client:
                         "flow_status": row.get("flow_status") if pd.notna(row.get("flow_status")) else None,
                         "drought_status": row.get("drought_status") if pd.notna(row.get("drought_status")) else None,
                         "flood_status": row.get("flood_status") if pd.notna(row.get("flood_status")) else None,
+                        "trend": row.get("trend") if pd.notna(row.get("trend")) else None,
+                        "trend_rate": round(row.get("trend_rate"), 2) if pd.notna(row.get("trend_rate")) else None,
+                        "hours_since_peak": round(row.get("hours_since_peak"), 1) if pd.notna(row.get("hours_since_peak")) else None,
                     }
                     # Include state if present
                     if "state" in row and pd.notna(row.get("state")):
@@ -276,4 +279,68 @@ class S3Client:
                 logger.warning("Flood thresholds not found in S3")
             else:
                 logger.error(f"Failed to download flood thresholds: {e}")
+            return None
+
+    def list_historical_snapshots(self, hours: int = 48) -> list[str]:
+        """
+        List S3 keys for snapshots in the time window.
+
+        Args:
+            hours: Number of hours to look back (default: 48)
+
+        Returns:
+            List of S3 keys sorted oldest first.
+        """
+        prefix = f"{config.s3.live_output_prefix}/history/"
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+
+        try:
+            paginator = self.s3.get_paginator("list_objects_v2")
+            keys = []
+
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    # Parse timestamp from filename (YYYY-MM-DDTHHMM.json)
+                    filename = key.split("/")[-1]
+                    if not filename.endswith(".json"):
+                        continue
+
+                    try:
+                        timestamp_str = filename.replace(".json", "")
+                        timestamp = datetime.strptime(timestamp_str, "%Y-%m-%dT%H%M")
+
+                        if timestamp >= cutoff_time:
+                            keys.append((timestamp, key))
+                    except ValueError:
+                        continue
+
+            # Sort by timestamp (oldest first)
+            keys.sort(key=lambda x: x[0])
+            return [key for _, key in keys]
+
+        except ClientError as e:
+            logger.error(f"Failed to list historical snapshots: {e}")
+            return []
+
+    def download_historical_snapshot(self, key: str) -> Optional[dict]:
+        """
+        Download and parse a single historical JSON snapshot.
+
+        Args:
+            key: S3 key for the snapshot
+
+        Returns:
+            Parsed JSON dict, or None if download failed.
+        """
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
+            json_data = response["Body"].read().decode("utf-8")
+            return json.loads(json_data)
+
+        except ClientError as e:
+            logger.warning(f"Failed to download snapshot {key}: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse snapshot {key}: {e}")
             return None

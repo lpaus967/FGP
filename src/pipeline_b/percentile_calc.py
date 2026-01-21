@@ -17,6 +17,7 @@ from src.utils.config import config
 from src.utils.s3_client import S3Client
 from .reference_loader import load_reference_data, load_flood_thresholds
 from .live_fetcher import fetch_state_current_conditions, extract_latest_values
+from .trend_detector import detect_all_trends, TrendResult
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,8 @@ def calculate_live_percentiles(
     current_df: pd.DataFrame,
     reference_df: pd.DataFrame,
     flood_thresholds_df: Optional[pd.DataFrame] = None,
-    month_day: Optional[str] = None
+    month_day: Optional[str] = None,
+    trends: Optional[dict[str, TrendResult]] = None
 ) -> pd.DataFrame:
     """
     Calculate percentiles and status for current conditions.
@@ -172,9 +174,11 @@ def calculate_live_percentiles(
         reference_df: DataFrame with percentile reference statistics
         flood_thresholds_df: DataFrame with NWS flood thresholds (optional)
         month_day: Month-day string for comparison (e.g., '01-15'). Default: today.
+        trends: Dict mapping site_id to TrendResult (optional)
 
     Returns:
-        DataFrame with site_id, flow, gage_height, percentile, flow_status, drought_status, flood_status.
+        DataFrame with site_id, flow, gage_height, percentile, flow_status, drought_status,
+        flood_status, trend, trend_rate, hours_since_peak.
     """
     if month_day is None:
         month_day = datetime.now().strftime("%m-%d")
@@ -208,8 +212,18 @@ def calculate_live_percentiles(
             "flow_status": None,
             "drought_status": None,
             "flood_status": None,
+            "trend": None,
+            "trend_rate": None,
+            "hours_since_peak": None,
             "timestamp": datetime.utcnow().isoformat()
         }
+
+        # Add trend data if available
+        if trends and site_id in trends:
+            trend_result = trends[site_id]
+            result["trend"] = trend_result.trend
+            result["trend_rate"] = trend_result.trend_rate
+            result["hours_since_peak"] = trend_result.hours_since_peak
 
         # Calculate percentile if we have flow data
         if current_flow is not None and not pd.isna(current_flow):
@@ -271,10 +285,12 @@ def run_live_monitor(
     else:
         logger.info("Flood thresholds not available (optional) - flood_status will be null")
 
-    all_results = []
+    # First pass: fetch current conditions for all states
+    state_data = {}
+    all_current_flows = {}
 
     for state in states:
-        logger.info(f"Processing state: {state}")
+        logger.info(f"Fetching current conditions for state: {state}")
 
         # Load reference data
         reference_df = load_reference_data(state)
@@ -290,11 +306,39 @@ def run_live_monitor(
         # Extract latest values
         latest_df = extract_latest_values(current_df)
 
-        # Calculate percentiles and status
+        # Store for second pass
+        state_data[state] = {
+            "reference_df": reference_df,
+            "latest_df": latest_df
+        }
+
+        # Build dict of current flows for trend detection
+        for _, row in latest_df.iterrows():
+            site_id = row.get("site_no")
+            discharge = row.get("discharge")
+            if site_id and discharge is not None and pd.notna(discharge):
+                all_current_flows[str(site_id)] = float(discharge)
+
+    # Detect trends for all sites at once (loads historical data from S3)
+    logger.info(f"Detecting trends for {len(all_current_flows)} sites")
+    try:
+        trends = detect_all_trends(all_current_flows, hours=config.trend.window_hours)
+    except Exception as e:
+        logger.warning(f"Trend detection failed, continuing without trends: {e}")
+        trends = {}
+
+    # Second pass: calculate percentiles with trend data
+    all_results = []
+
+    for state, data in state_data.items():
+        logger.info(f"Calculating percentiles for state: {state}")
+
+        # Calculate percentiles and status with trends
         results = calculate_live_percentiles(
-            latest_df,
-            reference_df,
-            flood_thresholds_df
+            data["latest_df"],
+            data["reference_df"],
+            flood_thresholds_df,
+            trends=trends
         )
 
         if not results.empty:
