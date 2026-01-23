@@ -1,6 +1,4 @@
 """
-TICKET-3.2: Live Data Fetcher
-
 Fetches current instantaneous values from USGS.
 Includes both discharge (00060) and gage height (00065) for flood stage determination.
 """

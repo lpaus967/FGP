@@ -163,7 +163,6 @@ def calculate_trend(
     # Using numpy's polyfit (degree 1)
     slope, intercept = np.polyfit(hours_from_start, normalized_flows, 1)
 
-    # trend_rate is slope (% change per hour)
     trend_rate = float(slope)
 
     # Total change over observation period

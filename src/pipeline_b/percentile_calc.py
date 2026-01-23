@@ -1,6 +1,4 @@
 """
-TICKET-3.3: Percentile Calculation Logic
-
 Calculates real-time percentiles by comparing current flow to reference statistics.
 Includes drought tier classification (USDM methodology) and flood status (NWS thresholds).
 """

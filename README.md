@@ -37,7 +37,24 @@ The system consists of two distinct data pipelines:
   1.  Download the latest reference stats from S3 (cached in memory or local disk).
   2.  Fetch current Instantaneous Values (IV) for all sites using `dataretrieval`.
   3.  Compare current IV against the reference DOY stats to derive the exact percentile.
-  4.  Save results to S3 (`s3://my-bucket/live_output/latest_conditions.json`) for frontend consumption.
+  4.  **Analyze flow trends** using 24-hour historical data to determine if flow is rising, falling, or stable.
+  5.  Save results to S3 (`s3://my-bucket/live_output/latest_conditions.json`) for frontend consumption.
+
+### Trend Detection
+
+Pipeline B includes trend analysis based on 24-hour flow history:
+
+| Trend | Description |
+|-------|-------------|
+| Rising | Flow increasing >5% per hour |
+| Falling | Flow decreasing >5% per hour |
+| Stable | Flow change within ±5% per hour |
+| Unknown | Insufficient data for analysis |
+
+**Output Fields:**
+- `trend`: Direction of flow change ("rising", "falling", "stable", "unknown")
+- `trend_rate`: Percent change per hour (positive = rising, negative = falling)
+- `hours_since_peak`: Hours elapsed since peak flow (only populated when falling)
 
 ## 3. Tech Stack
 

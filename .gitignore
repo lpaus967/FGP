@@ -110,3 +110,10 @@ logs/
 *.json
 !package.json
 output/
+
+
+# Terraform                                                                                                                                                           
+*.tfstate                                                                                                                                                             
+*.tfstate.*                                                                                                                                                           
+.terraform/                                                                                                                                                           
+.terraform.lock.hcl 

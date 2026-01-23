@@ -89,6 +89,9 @@ This document describes the architecture for displaying live streamflow percenti
          "flow_status": "Normal",
          "drought_status": null,
          "flood_status": null,
+         "trend": "stable",
+         "trend_rate": 0.3,
+         "hours_since_peak": null,
          "state": "MA"
        },
        "01134500": {
@@ -98,6 +101,9 @@ This document describes the architecture for displaying live streamflow percenti
          "flow_status": "Below Normal",
          "drought_status": "D2 - Severe Drought",
          "flood_status": null,
+         "trend": "falling",
+         "trend_rate": -2.5,
+         "hours_since_peak": 18.5,
          "state": "VT"
        },
        "01138500": {
@@ -107,6 +113,9 @@ This document describes the architecture for displaying live streamflow percenti
          "flow_status": "Much Above Normal",
          "drought_status": null,
          "flood_status": "Moderate Flood",
+         "trend": "rising",
+         "trend_rate": 8.2,
+         "hours_since_peak": null,
          "state": "VT"
        }
      }
@@ -120,6 +129,9 @@ This document describes the architecture for displaying live streamflow percenti
    - `flow_status`: Basic flow classification (Much Below Normal → Much Above Normal)
    - `drought_status`: USDM drought tier (D0-D4) or null if not in drought
    - `flood_status`: NWS flood stage (Action Stage → Major Flood) or null if not flooding
+   - `trend`: Flow direction based on 24-hour analysis ("rising", "falling", "stable", "unknown", or null)
+   - `trend_rate`: Percent change per hour (positive = rising, negative = falling)
+   - `hours_since_peak`: Hours since peak flow (only populated when trend is "falling")
 
 ### Client-Side Join
 
@@ -144,7 +156,10 @@ Object.entries(liveData.sites).forEach(([siteId, data]) => {
       gage_height: data.gage_height,
       flow_status: data.flow_status,
       drought_status: data.drought_status,
-      flood_status: data.flood_status
+      flood_status: data.flood_status,
+      trend: data.trend,
+      trend_rate: data.trend_rate,
+      hours_since_peak: data.hours_since_peak
     }
   );
 });
@@ -181,6 +196,17 @@ Object.entries(liveData.sites).forEach(([siteId, data]) => {
 | Minor Flood | Orange | `#FF9900` |
 | Moderate Flood | Red | `#FF0000` |
 | Major Flood | Purple | `#CC00CC` |
+
+### Trend Status Color Scheme
+
+| Trend | Color | Hex |
+|-------|-------|-----|
+| Rising | Green | `#22c55e` |
+| Falling | Red | `#ef4444` |
+| Stable | Gray | `#6b7280` |
+| Unknown | Light Gray | `#9ca3af` |
+
+The frontend supports switching between **Flow Status** mode (default) and **Trend** mode via a toggle in the legend. In Trend mode, sites are colored by their trend direction instead of flow percentile.
 
 ### Mapbox Layer Style (with Flood/Drought Priority)
 
@@ -232,6 +258,25 @@ map.addLayer({
     ]
   }
 });
+```
+
+### Trend Mode Layer Style
+
+When the user toggles to Trend mode, the circle color expression is swapped:
+
+```javascript
+// Trend-based coloring
+const trendColorExpression = [
+  'case',
+  ['==', ['feature-state', 'trend'], 'rising'], '#22c55e',   // Green
+  ['==', ['feature-state', 'trend'], 'falling'], '#ef4444', // Red
+  ['==', ['feature-state', 'trend'], 'stable'], '#6b7280',  // Gray
+  ['==', ['feature-state', 'trend'], 'unknown'], '#9ca3af', // Light gray
+  'rgba(156, 163, 175, 0.5)'  // Default
+];
+
+// Toggle color mode dynamically
+map.setPaintProperty('flow-sites-layer', 'circle-color', trendColorExpression);
 ```
 
 ## S3 Configuration for Public Access
