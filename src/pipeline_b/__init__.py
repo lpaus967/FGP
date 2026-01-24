@@ -6,6 +6,6 @@ against the pre-calculated reference statistics.
 """
 
 from .reference_loader import load_reference_data
-from .live_fetcher import fetch_current_conditions
+from .live_fetcher import fetch_current_conditions, fetch_all_stations, get_readings_for_trends, extract_latest_values
 from .percentile_calc import calculate_live_percentiles, run_live_monitor
-from .trend_detector import detect_all_trends, calculate_trend, TrendResult
+from .trend_detector import calculate_trend, TrendResult

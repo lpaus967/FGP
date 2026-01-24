@@ -14,8 +14,8 @@ import pandas as pd
 from src.utils.config import config
 from src.utils.s3_client import S3Client
 from .reference_loader import load_reference_data, load_flood_thresholds
-from .live_fetcher import fetch_state_current_conditions, extract_latest_values
-from .trend_detector import detect_all_trends, TrendResult
+from .live_fetcher import fetch_current_conditions, extract_latest_values, get_readings_for_trends
+from .trend_detector import calculate_trend, TrendResult
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +260,9 @@ def run_live_monitor(
     """
     Run the live monitoring pipeline for all specified states.
 
+    Uses the bulk-readings API to fetch all stations at once, then matches
+    them to states via reference data.
+
     Args:
         states: List of state codes to monitor. If None, monitors all states with reference data.
         upload_to_s3: Whether to upload results to S3.
@@ -283,58 +286,69 @@ def run_live_monitor(
     else:
         logger.info("Flood thresholds not available (optional) - flood_status will be null")
 
-    # First pass: fetch current conditions for all states
-    state_data = {}
-    all_current_flows = {}
+    # Fetch ALL current conditions at once via the bulk-readings API
+    logger.info("Fetching current conditions from bulk-readings API...")
+    current_df = fetch_current_conditions()
+    if current_df is None:
+        logger.error("Failed to fetch current conditions from API")
+        return pd.DataFrame()
 
-    for state in states:
-        logger.info(f"Fetching current conditions for state: {state}")
+    # Extract latest values (validates and filters)
+    latest_df = extract_latest_values(current_df)
+    logger.info(f"Fetched {len(latest_df)} valid stations from API")
 
-        # Load reference data
-        reference_df = load_reference_data(state)
-        if reference_df is None:
-            logger.warning(f"No reference data for state {state}")
-            continue
+    # Extract readings for trend detection (from API response, not S3)
+    historical_readings = get_readings_for_trends(current_df)
 
-        # Fetch current conditions (includes gage height)
-        current_df = fetch_state_current_conditions(state, include_gage_height=True)
-        if current_df is None:
-            continue
+    # Calculate trends using embedded readings from API
+    logger.info(f"Detecting trends for {len(historical_readings)} sites using API readings")
+    trends = {}
+    for site_id, flow_history in historical_readings.items():
+        try:
+            trend_result = calculate_trend(
+                flow_history,
+                rising_threshold=config.trend.rising_threshold,
+                falling_threshold=config.trend.falling_threshold,
+                min_data_points=config.trend.min_data_points
+            )
+            trends[site_id] = trend_result
+        except Exception as e:
+            logger.debug(f"Trend calculation failed for {site_id}: {e}")
 
-        # Extract latest values
-        latest_df = extract_latest_values(current_df)
+    logger.info(f"Calculated trends for {len(trends)} sites")
 
-        # Store for second pass
-        state_data[state] = {
-            "reference_df": reference_df,
-            "latest_df": latest_df
-        }
+    # Log trend summary
+    if trends:
+        trend_counts = {}
+        for r in trends.values():
+            trend_counts[r.trend] = trend_counts.get(r.trend, 0) + 1
+        logger.info(f"Trend summary: {trend_counts}")
 
-        # Build dict of current flows for trend detection
-        for _, row in latest_df.iterrows():
-            site_id = row.get("site_no")
-            discharge = row.get("discharge")
-            if site_id and discharge is not None and pd.notna(discharge):
-                all_current_flows[str(site_id)] = float(discharge)
-
-    # Detect trends for all sites at once (loads historical data from S3)
-    logger.info(f"Detecting trends for {len(all_current_flows)} sites")
-    try:
-        trends = detect_all_trends(all_current_flows, hours=config.trend.window_hours)
-    except Exception as e:
-        logger.warning(f"Trend detection failed, continuing without trends: {e}")
-        trends = {}
-
-    # Second pass: calculate percentiles with trend data
+    # Load reference data for all states and match stations
     all_results = []
 
-    for state, data in state_data.items():
-        logger.info(f"Calculating percentiles for state: {state}")
+    for state in states:
+        # Load reference data for this state
+        reference_df = load_reference_data(state)
+        if reference_df is None:
+            logger.debug(f"No reference data for state {state}")
+            continue
+
+        # Get the site_ids that have reference data for this state
+        state_site_ids = set(reference_df["site_id"].unique())
+
+        # Filter current data to only stations in this state's reference data
+        state_latest_df = latest_df[latest_df["site_no"].isin(state_site_ids)].copy()
+
+        if state_latest_df.empty:
+            continue
+
+        logger.info(f"Processing {len(state_latest_df)} stations for state: {state}")
 
         # Calculate percentiles and status with trends
         results = calculate_live_percentiles(
-            data["latest_df"],
-            data["reference_df"],
+            state_latest_df,
+            reference_df,
             flood_thresholds_df,
             trends=trends
         )
@@ -347,6 +361,7 @@ def run_live_monitor(
         return pd.DataFrame()
 
     combined = pd.concat(all_results, ignore_index=True)
+    logger.info(f"Total results: {len(combined)} stations across {len(all_results)} states")
 
     # Upload to S3
     if upload_to_s3:
