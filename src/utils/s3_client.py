@@ -16,6 +16,9 @@ from botocore.exceptions import ClientError
 
 from .config import config
 
+# CloudWatch client for custom metrics
+cloudwatch = boto3.client("cloudwatch")
+
 logger = logging.getLogger(__name__)
 
 
@@ -178,6 +181,37 @@ class S3Client:
             )
 
             logger.info(f"Uploaded live output ({len(sites_dict)} sites) to s3://{self.bucket}/{current_key}")
+
+            # Publish custom CloudWatch metrics
+            try:
+                # Count sites with temperature data
+                sites_with_temp = sum(1 for s in sites_dict.values() if s.get("water_temp") is not None)
+
+                cloudwatch.put_metric_data(
+                    Namespace="FGP/Pipeline",
+                    MetricData=[
+                        {
+                            "MetricName": "SitesUploaded",
+                            "Value": len(sites_dict),
+                            "Unit": "Count",
+                            "Dimensions": [
+                                {"Name": "Environment", "Value": "dev"},
+                            ]
+                        },
+                        {
+                            "MetricName": "SitesWithTemperature",
+                            "Value": sites_with_temp,
+                            "Unit": "Count",
+                            "Dimensions": [
+                                {"Name": "Environment", "Value": "dev"},
+                            ]
+                        },
+                    ]
+                )
+                logger.debug(f"Published CloudWatch metrics: {len(sites_dict)} sites, {sites_with_temp} with temp")
+            except Exception as cw_err:
+                logger.warning(f"Failed to publish CloudWatch metrics: {cw_err}")
+
             return True
 
         except ClientError as e:
