@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from .config import config
 
 # CloudWatch client for custom metrics
-cloudwatch = boto3.client("cloudwatch")
+cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
 
 logger = logging.getLogger(__name__)
 
