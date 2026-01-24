@@ -13,8 +13,11 @@ Usage:
 import argparse
 import logging
 import sys
+import time
 from datetime import datetime
 from typing import Optional
+
+import boto3
 
 from src.pipeline_a import generate_state_reference
 from src.pipeline_a.batch_processor import run_full_reference_generation
@@ -95,6 +98,8 @@ def main() -> int:
     logger.info(f"Starting USGS Flow Monitor in {args.mode} mode")
     logger.info(f"States: {states or 'all'}")
 
+    start_time = time.time()
+
     try:
         if args.mode == "slow":
             # Pipeline A: Reference Generator
@@ -107,6 +112,30 @@ def main() -> int:
             logger.info("Running Pipeline B: Live Monitor")
             results = run_live_monitor(states=states)
             logger.info(f"Pipeline B completed. Processed {len(results)} sites.")
+
+        # Calculate and publish execution time
+        execution_time = time.time() - start_time
+        logger.info(f"Pipeline execution time: {execution_time:.1f} seconds")
+
+        try:
+            cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+            cloudwatch.put_metric_data(
+                Namespace="FGP/Pipeline",
+                MetricData=[
+                    {
+                        "MetricName": "ExecutionTimeSeconds",
+                        "Value": execution_time,
+                        "Unit": "Seconds",
+                        "Dimensions": [
+                            {"Name": "Environment", "Value": "dev"},
+                            {"Name": "Mode", "Value": args.mode},
+                        ]
+                    }
+                ]
+            )
+            logger.info("Published execution time metric to CloudWatch")
+        except Exception as cw_err:
+            logger.warning(f"Failed to publish execution time metric: {cw_err}")
 
         return 0
 
