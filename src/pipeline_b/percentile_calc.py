@@ -14,8 +14,8 @@ import pandas as pd
 from src.utils.config import config
 from src.utils.s3_client import S3Client
 from .reference_loader import load_reference_data, load_flood_thresholds
-from .live_fetcher import fetch_current_conditions, extract_latest_values, get_readings_for_trends
-from .trend_detector import calculate_trend, TrendResult
+from .live_fetcher import fetch_current_conditions, extract_latest_values, get_readings_for_trends, get_temp_readings_for_trends
+from .trend_detector import calculate_trend, calculate_temp_trend, TrendResult
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,8 @@ def calculate_live_percentiles(
     reference_df: pd.DataFrame,
     flood_thresholds_df: Optional[pd.DataFrame] = None,
     month_day: Optional[str] = None,
-    trends: Optional[dict[str, TrendResult]] = None
+    trends: Optional[dict[str, TrendResult]] = None,
+    temp_trends: Optional[dict[str, TrendResult]] = None
 ) -> pd.DataFrame:
     """
     Calculate percentiles and status for current conditions.
@@ -197,6 +198,7 @@ def calculate_live_percentiles(
         site_id = row.get("site_no")
         current_flow = row.get("discharge")
         gage_height = row.get("gage_height")
+        water_temp = row.get("water_temp")
 
         if site_id is None:
             continue
@@ -206,6 +208,7 @@ def calculate_live_percentiles(
             "site_id": site_id,
             "flow": current_flow if pd.notna(current_flow) else None,
             "gage_height": gage_height if pd.notna(gage_height) else None,
+            "water_temp": water_temp if pd.notna(water_temp) else None,
             "percentile": None,
             "flow_status": None,
             "drought_status": None,
@@ -213,6 +216,7 @@ def calculate_live_percentiles(
             "trend": None,
             "trend_rate": None,
             "hours_since_peak": None,
+            "water_temp_trend": None,
             "timestamp": datetime.utcnow().isoformat()
         }
 
@@ -222,6 +226,11 @@ def calculate_live_percentiles(
             result["trend"] = trend_result.trend
             result["trend_rate"] = trend_result.trend_rate
             result["hours_since_peak"] = trend_result.hours_since_peak
+
+        # Add temperature trend data if available
+        if temp_trends and site_id in temp_trends:
+            temp_trend_result = temp_trends[site_id]
+            result["water_temp_trend"] = temp_trend_result.trend
 
         # Calculate percentile if we have flow data
         if current_flow is not None and not pd.isna(current_flow):
@@ -324,6 +333,33 @@ def run_live_monitor(
             trend_counts[r.trend] = trend_counts.get(r.trend, 0) + 1
         logger.info(f"Trend summary: {trend_counts}")
 
+    # Extract temperature readings for trend detection
+    temp_readings = get_temp_readings_for_trends(current_df)
+
+    # Calculate temperature trends
+    logger.info(f"Detecting temp trends for {len(temp_readings)} sites using API readings")
+    temp_trends = {}
+    for site_id, temp_history in temp_readings.items():
+        try:
+            temp_trend_result = calculate_temp_trend(
+                temp_history,
+                rising_threshold=config.trend.temp_rising_threshold,
+                falling_threshold=config.trend.temp_falling_threshold,
+                min_data_points=config.trend.min_data_points
+            )
+            temp_trends[site_id] = temp_trend_result
+        except Exception as e:
+            logger.debug(f"Temp trend calculation failed for {site_id}: {e}")
+
+    logger.info(f"Calculated temp trends for {len(temp_trends)} sites")
+
+    # Log temp trend summary
+    if temp_trends:
+        temp_trend_counts = {}
+        for r in temp_trends.values():
+            temp_trend_counts[r.trend] = temp_trend_counts.get(r.trend, 0) + 1
+        logger.info(f"Temp trend summary: {temp_trend_counts}")
+
     # Load reference data for all states and match stations
     all_results = []
 
@@ -350,7 +386,8 @@ def run_live_monitor(
             state_latest_df,
             reference_df,
             flood_thresholds_df,
-            trends=trends
+            trends=trends,
+            temp_trends=temp_trends
         )
 
         if not results.empty:

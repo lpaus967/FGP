@@ -157,6 +157,7 @@ def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bo
                     "provider": station.get("provider", ""),
                     "discharge": latest_reading.get("waterFlowCFS"),
                     "gage_height": latest_reading.get("riverDepthFT"),
+                    "water_temp": latest_reading.get("waterTempC"),
                     "timestamp": latest_reading.get("timestamp"),
                     "_readings": readings  # Keep for trend detection
                 })
@@ -289,6 +290,64 @@ def get_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[datetim
 
     logger.info(f"Extracted historical readings for {len(site_flows)} sites for trend detection")
     return site_flows
+
+
+def get_temp_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[datetime, float]]]:
+    """
+    Extract historical temperature readings from the fetched data for trend detection.
+
+    The new API returns 48-hour readings for each station, which can be used
+    directly for trend detection without looking up S3 history.
+
+    Args:
+        iv_df: DataFrame from fetch_current_conditions (must have _readings column)
+
+    Returns:
+        Dict mapping site_id to list of (timestamp, temp) tuples sorted by time.
+    """
+    site_temps: dict[str, list[tuple[datetime, float]]] = {}
+
+    if iv_df is None or iv_df.empty:
+        return site_temps
+
+    if "_readings" not in iv_df.columns:
+        logger.warning("No _readings column in DataFrame - temp trend detection unavailable")
+        return site_temps
+
+    for _, row in iv_df.iterrows():
+        site_id = row.get("site_no")
+        readings = row.get("_readings", [])
+
+        if not site_id or not readings:
+            continue
+
+        temp_history = []
+        for reading in readings:
+            temp = reading.get("waterTempC")
+            timestamp_str = reading.get("timestamp")
+
+            if temp is None or timestamp_str is None:
+                continue
+
+            try:
+                # Parse ISO timestamp
+                if timestamp_str.endswith("Z"):
+                    timestamp_str = timestamp_str[:-1] + "+00:00"
+                timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                # Convert to naive UTC for consistency with existing trend_detector
+                timestamp = timestamp.replace(tzinfo=None)
+                temp_history.append((timestamp, float(temp)))
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Error parsing reading timestamp for {site_id}: {e}")
+                continue
+
+        if temp_history:
+            # Sort by timestamp
+            temp_history.sort(key=lambda x: x[0])
+            site_temps[str(site_id)] = temp_history
+
+    logger.info(f"Extracted temp readings for {len(site_temps)} sites for trend detection")
+    return site_temps
 
 
 def _get_latest_reading(readings: list[dict]) -> Optional[dict]:

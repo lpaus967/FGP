@@ -136,6 +136,7 @@ class S3Client:
                     site_data = {
                         "flow": row.get("flow") if pd.notna(row.get("flow")) else None,
                         "gage_height": row.get("gage_height") if pd.notna(row.get("gage_height")) else None,
+                        "water_temp": row.get("water_temp") if pd.notna(row.get("water_temp")) else None,
                         "percentile": row.get("percentile") if pd.notna(row.get("percentile")) else None,
                         "flow_status": row.get("flow_status") if pd.notna(row.get("flow_status")) else None,
                         "drought_status": row.get("drought_status") if pd.notna(row.get("drought_status")) else None,
@@ -143,6 +144,7 @@ class S3Client:
                         "trend": row.get("trend") if pd.notna(row.get("trend")) else None,
                         "trend_rate": round(row.get("trend_rate"), 2) if pd.notna(row.get("trend_rate")) else None,
                         "hours_since_peak": round(row.get("hours_since_peak"), 1) if pd.notna(row.get("hours_since_peak")) else None,
+                        "water_temp_trend": row.get("water_temp_trend") if pd.notna(row.get("water_temp_trend")) else None,
                     }
                     # Include state if present
                     if "state" in row and pd.notna(row.get("state")):

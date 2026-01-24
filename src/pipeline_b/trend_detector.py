@@ -193,6 +193,99 @@ def calculate_trend(
     )
 
 
+def calculate_temp_trend(
+    temp_history: list[tuple[datetime, float]],
+    rising_threshold: float = 1.0,
+    falling_threshold: float = -1.0,
+    min_data_points: int = 4
+) -> TrendResult:
+    """
+    Calculate temperature trend using linear regression on absolute degrees.
+
+    Unlike flow trends which use normalized percentages, temperature trends
+    use absolute degree changes since temperature ranges are constrained.
+    A 1°C change provides consistent sensitivity across the typical range.
+
+    Algorithm:
+    1. Linear regression: temp = slope * hours + intercept
+    2. trend_rate = slope (°C per hour)
+    3. Total change = slope * total_hours
+    4. Classify: rising (>threshold), falling (<threshold), stable (between)
+
+    Args:
+        temp_history: List of (timestamp, temp) tuples, sorted by time
+        rising_threshold: °C total change threshold for rising classification
+        falling_threshold: °C total change threshold for falling classification
+        min_data_points: Minimum data points required for analysis
+
+    Returns:
+        TrendResult with trend classification and metrics.
+    """
+    data_points = len(temp_history)
+
+    # Not enough data
+    if data_points < min_data_points:
+        return TrendResult(
+            trend="unknown",
+            trend_rate=0.0,
+            hours_since_peak=None,
+            data_points=data_points
+        )
+
+    # Extract timestamps and temperatures
+    timestamps = [t for t, _ in temp_history]
+    temps = np.array([t for _, t in temp_history])
+
+    # Check for all identical temperatures
+    if np.std(temps) < 1e-10:
+        return TrendResult(
+            trend="stable",
+            trend_rate=0.0,
+            hours_since_peak=None,
+            data_points=data_points
+        )
+
+    # Calculate time in hours from first observation
+    base_time = timestamps[0]
+    hours_from_start = np.array([
+        (t - base_time).total_seconds() / 3600.0 for t in timestamps
+    ])
+
+    # Total observation window
+    total_hours = hours_from_start[-1] - hours_from_start[0]
+    if total_hours < 0.1:  # Less than 6 minutes of data
+        return TrendResult(
+            trend="unknown",
+            trend_rate=0.0,
+            hours_since_peak=None,
+            data_points=data_points
+        )
+
+    # Linear regression: temp = slope * hours + intercept
+    # Using numpy's polyfit (degree 1)
+    slope, intercept = np.polyfit(hours_from_start, temps, 1)
+
+    trend_rate = float(slope)
+
+    # Total change over observation period (in degrees C)
+    total_change = trend_rate * total_hours
+
+    # Classify trend based on absolute degree change
+    if total_change >= rising_threshold:
+        trend = "rising"
+    elif total_change <= falling_threshold:
+        trend = "falling"
+    else:
+        trend = "stable"
+
+    return TrendResult(
+        trend=trend,
+        trend_rate=round(trend_rate, 3),
+        hours_since_peak=None,  # Not tracking peak for temperature
+        data_points=data_points
+    )
+
+
 def detect_all_trends(
     current_flows: dict[str, float],
     s3_client: Optional[S3Client] = None,

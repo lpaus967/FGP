@@ -46,6 +46,8 @@ class TrendConfig:
     min_data_points: int = 4        # Minimum readings required
     rising_threshold: float = 5.0   # % total change to classify as rising
     falling_threshold: float = -5.0 # % total change to classify as falling
+    temp_rising_threshold: float = 1.0   # Degrees C change to classify as rising
+    temp_falling_threshold: float = -1.0 # Degrees C change to classify as falling
 
 
 @dataclass
