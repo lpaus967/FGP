@@ -150,14 +150,27 @@ def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bo
             latest_reading = _get_latest_reading(readings)
 
             if latest_reading:
+                # Use latest value, or fall back to most recent non-null value
+                discharge = latest_reading.get("waterFlowCFS")
+                if discharge is None:
+                    discharge = _get_latest_non_null_value(readings, "waterFlowCFS")
+
+                gage_height = latest_reading.get("riverDepthFT")
+                if gage_height is None:
+                    gage_height = _get_latest_non_null_value(readings, "riverDepthFT")
+
+                water_temp = latest_reading.get("waterTempC")
+                if water_temp is None:
+                    water_temp = _get_latest_non_null_value(readings, "waterTempC")
+
                 records.append({
                     "site_no": provider_id,
                     "station_id": station.get("stationId", ""),
                     "name": station.get("name", ""),
                     "provider": station.get("provider", ""),
-                    "discharge": latest_reading.get("waterFlowCFS"),
-                    "gage_height": latest_reading.get("riverDepthFT"),
-                    "water_temp": latest_reading.get("waterTempC"),
+                    "discharge": discharge,
+                    "gage_height": gage_height,
+                    "water_temp": water_temp,
                     "timestamp": latest_reading.get("timestamp"),
                     "_readings": readings  # Keep for trend detection
                 })
@@ -348,6 +361,37 @@ def get_temp_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[da
 
     logger.info(f"Extracted temp readings for {len(site_temps)} sites for trend detection")
     return site_temps
+
+
+def _get_latest_non_null_value(readings: list[dict], field: str) -> Optional[float]:
+    """
+    Get the most recent non-null value for a specific field from readings.
+
+    Iterates through readings from newest to oldest to find the first non-null value.
+
+    Args:
+        readings: List of reading objects with timestamp field
+        field: The field name to extract (e.g., 'waterFlowCFS', 'waterTempC')
+
+    Returns:
+        The most recent non-null value, or None if all values are null.
+    """
+    if not readings:
+        return None
+
+    # Sort readings by timestamp descending (newest first)
+    sorted_readings = sorted(
+        readings,
+        key=lambda r: r.get("timestamp", ""),
+        reverse=True
+    )
+
+    for reading in sorted_readings:
+        value = reading.get(field)
+        if value is not None:
+            return value
+
+    return None
 
 
 def _get_latest_reading(readings: list[dict]) -> Optional[dict]:
