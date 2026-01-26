@@ -1,5 +1,5 @@
 """
-Fetches current station readings from the bulk-readings API.
+Fetches current station readings from DynamoDB.
 Uses cursor-based pagination to fetch all stations.
 Includes both discharge (flow) and gage height for flood stage determination.
 Also provides 48-hour historical readings for trend detection.
@@ -11,120 +11,61 @@ from typing import Optional
 from datetime import datetime
 
 import pandas as pd
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+from ..utils.dynamodb_client import (
+    fetch_all_stations_from_dynamodb,
+    get_stations_with_readings_cursor,
+)
 
 logger = logging.getLogger(__name__)
 
-# API Configuration
-API_BASE_URL = "https://f7ae5iy51g.execute-api.us-west-2.amazonaws.com/v1"
-BULK_READINGS_ENDPOINT = f"{API_BASE_URL}/stations/bulk-readings"
+# Default configuration
 DEFAULT_LIMIT = 100
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_BACKOFF_FACTOR = 1.0  # 1s, 2s, 4s between retries
-RETRY_STATUS_CODES = [500, 502, 503, 504]
+DEFAULT_HOURS_BACK = 48
+DEFAULT_CONCURRENCY = 10
 
 
-def _create_session() -> requests.Session:
-    """Create a requests session with retry logic and connection pooling."""
-    session = requests.Session()
-
-    retry_strategy = Retry(
-        total=MAX_RETRIES,
-        backoff_factor=RETRY_BACKOFF_FACTOR,
-        status_forcelist=RETRY_STATUS_CODES,
-        allowed_methods=["GET"],
-        raise_on_status=False  # Don't raise, let us handle it
-    )
-
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-        pool_connections=10,
-        pool_maxsize=10
-    )
-
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
-    return session
-
-
-def fetch_all_stations(limit: int = DEFAULT_LIMIT) -> list[dict]:
+def fetch_all_stations(
+    limit: int = DEFAULT_LIMIT,
+    hours_back: int = DEFAULT_HOURS_BACK,
+    concurrency_limit: int = DEFAULT_CONCURRENCY
+) -> list[dict]:
     """
-    Fetch all stations using cursor-based pagination.
+    Fetch all stations using cursor-based pagination from DynamoDB.
 
     Args:
-        limit: Number of stations per page (default 250)
+        limit: Number of stations per page (default 100)
+        hours_back: Hours of readings to fetch (default 48)
+        concurrency_limit: Max parallel reading queries (default 10)
 
     Returns:
         List of all station objects with readings.
     """
-    all_stations = []
-    cursor = None
-    page_count = 0
+    start_time = time.time()
 
-    # Use session for connection pooling and retries
-    session = _create_session()
+    stations = fetch_all_stations_from_dynamodb(
+        limit_per_page=limit,
+        hours_back=hours_back,
+        concurrency_limit=concurrency_limit
+    )
 
-    while True:
-        page_count += 1
+    elapsed = time.time() - start_time
+    logger.info(f"Fetched {len(stations)} stations from DynamoDB in {elapsed:.1f}s")
 
-        # Build request URL
-        params = {"limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-
-        try:
-            start_time = time.time()
-            response = session.get(BULK_READINGS_ENDPOINT, params=params, timeout=90)
-
-            if response.status_code != 200:
-                logger.error(f"Error fetching stations (page {page_count}): HTTP {response.status_code}")
-                # If we have some data, return what we got
-                if all_stations:
-                    logger.warning(f"Returning {len(all_stations)} stations fetched before error")
-                break
-
-            data = response.json()
-            elapsed = time.time() - start_time
-
-        except requests.RequestException as e:
-            logger.error(f"Error fetching stations (page {page_count}): {e}")
-            # If we have some data, return what we got
-            if all_stations:
-                logger.warning(f"Returning {len(all_stations)} stations fetched before error")
-            break
-
-        stations = data.get("stations", [])
-        all_stations.extend(stations)
-
-        stations_in_page = data.get("stationsInPage", len(stations))
-        logger.info(f"Fetched page {page_count}: {stations_in_page} stations ({elapsed:.1f}s)")
-
-        # Check for next page
-        cursor = data.get("nextCursor")
-        if cursor is None:
-            logger.info(f"Pagination complete. Total stations: {len(all_stations)}")
-            break
-
-    session.close()
-    return all_stations
+    return stations
 
 
 def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bool = True) -> Optional[pd.DataFrame]:
     """
-    Fetch current conditions for all stations.
+    Fetch current conditions for all stations from DynamoDB.
 
-    Note: The new API fetches all stations at once via pagination.
+    Note: Fetches all stations at once via pagination.
     The site_ids parameter is kept for API compatibility but filtering
     happens after fetching all data.
 
     Args:
         site_ids: Optional list of site IDs to filter (applied post-fetch)
-        include_gage_height: Whether to include gage height (always True with new API)
+        include_gage_height: Whether to include gage height (always True)
 
     Returns:
         DataFrame with current discharge and gage height values, or None if fetch fails.
@@ -133,13 +74,13 @@ def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bo
         stations = fetch_all_stations()
 
         if not stations:
-            logger.warning("No stations returned from API")
+            logger.warning("No stations returned from DynamoDB")
             return None
 
         # Convert to DataFrame format expected by the pipeline
         records = []
         for station in stations:
-            provider_id = station.get("providerId", "")
+            provider_id = station.get("provider_id", "")
 
             # Skip if we have a site filter and this station isn't in it
             if site_ids and provider_id not in site_ids:
@@ -151,21 +92,21 @@ def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bo
 
             if latest_reading:
                 # Use latest value, or fall back to most recent non-null value
-                discharge = latest_reading.get("waterFlowCFS")
+                discharge = latest_reading.get("water_flow_cfs")
                 if discharge is None:
-                    discharge = _get_latest_non_null_value(readings, "waterFlowCFS")
+                    discharge = _get_latest_non_null_value(readings, "water_flow_cfs")
 
-                gage_height = latest_reading.get("riverDepthFT")
+                gage_height = latest_reading.get("river_depth_ft")
                 if gage_height is None:
-                    gage_height = _get_latest_non_null_value(readings, "riverDepthFT")
+                    gage_height = _get_latest_non_null_value(readings, "river_depth_ft")
 
-                water_temp = latest_reading.get("waterTempC")
+                water_temp = latest_reading.get("water_temp_c")
                 if water_temp is None:
-                    water_temp = _get_latest_non_null_value(readings, "waterTempC")
+                    water_temp = _get_latest_non_null_value(readings, "water_temp_c")
 
                 records.append({
                     "site_no": provider_id,
-                    "station_id": station.get("stationId", ""),
+                    "station_id": station.get("station_id", ""),
                     "name": station.get("name", ""),
                     "provider": station.get("provider", ""),
                     "discharge": discharge,
@@ -190,20 +131,20 @@ def fetch_current_conditions(site_ids: list[str] = None, include_gage_height: bo
 
 def fetch_state_current_conditions(state_code: str, include_gage_height: bool = True) -> Optional[pd.DataFrame]:
     """
-    Fetch current conditions for all stations.
+    Fetch current conditions for all stations from DynamoDB.
 
-    Note: The new API doesn't filter by state - it returns all stations.
+    Note: DynamoDB doesn't filter by state - it returns all stations.
     State filtering should be done in post-processing if needed.
     This function is kept for API compatibility with the existing pipeline.
 
     Args:
         state_code: Two-letter state code (ignored - all stations fetched)
-        include_gage_height: Whether to include gage height (always True with new API)
+        include_gage_height: Whether to include gage height (always True)
 
     Returns:
         DataFrame with current discharge and gage height values.
     """
-    logger.info(f"Fetching current conditions (API returns all states, requested: {state_code})")
+    logger.info(f"Fetching current conditions from DynamoDB (requested state: {state_code})")
     return fetch_current_conditions(include_gage_height=include_gage_height)
 
 
@@ -251,7 +192,7 @@ def get_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[datetim
     """
     Extract historical readings from the fetched data for trend detection.
 
-    The new API returns 48-hour readings for each station, which can be used
+    DynamoDB returns 48-hour readings for each station, which can be used
     directly for trend detection without looking up S3 history.
 
     Args:
@@ -278,7 +219,7 @@ def get_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[datetim
 
         flow_history = []
         for reading in readings:
-            discharge = reading.get("waterFlowCFS")
+            discharge = reading.get("water_flow_cfs")
             timestamp_str = reading.get("timestamp")
 
             if discharge is None or timestamp_str is None:
@@ -309,7 +250,7 @@ def get_temp_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[da
     """
     Extract historical temperature readings from the fetched data for trend detection.
 
-    The new API returns 48-hour readings for each station, which can be used
+    DynamoDB returns 48-hour readings for each station, which can be used
     directly for trend detection without looking up S3 history.
 
     Args:
@@ -336,7 +277,7 @@ def get_temp_readings_for_trends(iv_df: pd.DataFrame) -> dict[str, list[tuple[da
 
         temp_history = []
         for reading in readings:
-            temp = reading.get("waterTempC")
+            temp = reading.get("water_temp_c")
             timestamp_str = reading.get("timestamp")
 
             if temp is None or timestamp_str is None:

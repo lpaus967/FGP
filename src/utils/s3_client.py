@@ -7,6 +7,7 @@ Handles all S3 operations for uploading and downloading data.
 import io
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -17,7 +18,7 @@ from botocore.exceptions import ClientError
 from .config import config
 
 # CloudWatch client for custom metrics
-cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+cloudwatch = boto3.client("cloudwatch", region_name=os.getenv("AWS_REGION", "us-west-1"))
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class S3Client:
         Args:
             bucket_name: S3 bucket name (default: from config)
         """
-        self.s3 = boto3.client("s3")
+        self.s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-west-1"))
         self.bucket = bucket_name or config.s3.bucket_name
 
     def upload_reference_stats(self, df: pd.DataFrame, state_code: str) -> bool:
