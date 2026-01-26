@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Configuration from environment
 TABLE_NAME = os.getenv("HYDRA_TABLE_NAME", "HydraDataTable")
-AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
+# Use HYDRA_TABLE_REGION for DynamoDB (may differ from AWS_REGION used for S3)
+DYNAMODB_REGION = os.getenv("HYDRA_TABLE_REGION", "us-west-2")
 GSI_NAME = "StationSyncScheduleIndex"
 
 
@@ -181,7 +182,7 @@ async def get_stations_with_readings_cursor_async(
 
     session = aioboto3.Session()
 
-    async with session.resource("dynamodb", region_name=AWS_REGION) as dynamodb:
+    async with session.resource("dynamodb", region_name=DYNAMODB_REGION) as dynamodb:
         table = await dynamodb.Table(TABLE_NAME)
 
         # Keep querying until we have enough active stations or no more data
