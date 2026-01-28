@@ -13,7 +13,7 @@ import pandas as pd
 
 from src.utils.config import config
 from src.utils.s3_client import S3Client
-from .reference_loader import load_reference_data, load_flood_thresholds
+from .reference_loader import load_reference_data, load_flood_thresholds, clear_cache
 from .live_fetcher import fetch_current_conditions, extract_latest_values, get_readings_for_trends, get_temp_readings_for_trends
 from .trend_detector import calculate_trend, calculate_temp_trend, TrendResult
 
@@ -360,6 +360,10 @@ def run_live_monitor(
             temp_trend_counts[r.trend] = temp_trend_counts.get(r.trend, 0) + 1
         logger.info(f"Temp trend summary: {temp_trend_counts}")
 
+    # Free memory: drop embedded readings now that trends are extracted
+    if "_readings" in current_df.columns:
+        current_df = current_df.drop(columns=["_readings"])
+
     # Load reference data for all states and match stations
     all_results = []
 
@@ -395,6 +399,7 @@ def run_live_monitor(
             all_results.append(results)
 
     if not all_results:
+        clear_cache()
         return pd.DataFrame()
 
     combined = pd.concat(all_results, ignore_index=True)
@@ -404,5 +409,8 @@ def run_live_monitor(
     if upload_to_s3:
         s3_client = S3Client()
         s3_client.upload_live_output(combined)
+
+    # Free memory: clear reference data cache after run completes
+    clear_cache()
 
     return combined
